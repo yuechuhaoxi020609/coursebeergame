@@ -7,7 +7,18 @@ import random
 from collections import deque
 import os
 import matplotlib
+import json
+from tqdm import tqdm
 matplotlib.use('Agg')
+plt.rcParams['axes.unicode_minus'] = False  # 绘图显示负号
+
+from argparse import ArgumentParser
+
+parser = ArgumentParser()
+parser.add_argument("--mode", type=str, default="train") # [train, test]
+parser.add_argument("--tot_agents_num", type=int, default=5) # Max 5
+parser.add_argument("--intelligence_agents_num", type=int, default=1)
+args = parser.parse_args()
 
 # 复制环境类
 class Env:
@@ -350,12 +361,12 @@ class DQNAgent:
             return True
         return False
 
-def train_dqn(env, agent, num_episodes=1000, max_t=100, eps_start=1.0, eps_end=0.01, eps_decay=0.995):
+def train_dqn(env: Env, agents, num_episodes=1000, max_t=100, eps_start=1.0, eps_end=0.01, eps_decay=0.995):
     """
     训练DQN智能体
     
     :param env: 环境
-    :param agent: DQN智能体
+    :param agents: DQN多智能体
     :param num_episodes: 训练的episodes数量
     :param max_t: 每个episode的最大步数
     :param eps_start: 起始epsilon值
@@ -363,21 +374,21 @@ def train_dqn(env, agent, num_episodes=1000, max_t=100, eps_start=1.0, eps_end=0
     :param eps_decay: epsilon衰减率
     :return: 所有episode的奖励
     """
-    scores = []  # 每个episode的总奖励
+    scores = {i: [] for i in agents}  # 每个episode的总奖励
     eps = eps_start  # 初始epsilon值
     
     for i_episode in range(1, num_episodes+1):
         state = env.reset()
-        score = 0
+        score = {i: 0 for i in agents}
         
         for t in range(max_t):
             # 对特定企业采取动作，其他企业随机决策
             actions = np.zeros((env.num_firms, 1))
             for firm_id in range(env.num_firms):
-                if firm_id == agent.firm_id:
+                if firm_id in agents:
                     # 使用智能体策略
                     firm_state = state[firm_id].reshape(1, -1)
-                    action = agent.act(firm_state, eps)
+                    action = agents[firm_id].act(firm_state, eps)
                     actions[firm_id] = action
                 else:
                     # 对其他企业采取随机策略
@@ -386,15 +397,17 @@ def train_dqn(env, agent, num_episodes=1000, max_t=100, eps_start=1.0, eps_end=0
             # 执行动作
             next_state, rewards, done = env.step(actions)
             
-            # 该企业的奖励
-            reward = rewards[agent.firm_id][0]
+            for firm_id in range(env.num_firms):
+                if firm_id in agents:
+                    # 该企业的奖励
+                    reward = rewards[firm_id][0]
             
-            # 保存经验并学习
-            agent.step(state[agent.firm_id].reshape(1, -1), actions[agent.firm_id], reward, next_state[agent.firm_id].reshape(1, -1), done)
-            
-            # 更新状态和奖励
-            state = next_state
-            score += reward
+                    # 保存经验并学习
+                    agents[firm_id].step(state[firm_id].reshape(1, -1), actions[firm_id], reward, next_state[firm_id].reshape(1, -1), done)
+                    
+                    # 更新状态和奖励
+                    state = next_state
+                    score[firm_id] += reward
             
             if done:
                 break
@@ -403,22 +416,26 @@ def train_dqn(env, agent, num_episodes=1000, max_t=100, eps_start=1.0, eps_end=0
         eps = max(eps_end, eps_decay * eps)
         
         # 记录分数
-        scores.append(score)
+        for i in agents:
+            scores[i].append(score[i])
         
         # 输出进度
         if i_episode % 100 == 0:
-            print(f'Episode {i_episode}/{num_episodes} | Average Score: {np.mean(scores[-100:]):.2f} | Epsilon: {eps:.4f}')
+            for i in agents:
+                print(f'Episode {i_episode}/{num_episodes} | Agent {i} | Average Score: {np.mean(scores[i][-100:]):.2f} | Epsilon: {eps:.4f}')
         
         # 每隔一定episode保存模型
         if i_episode % 500 == 0:
-            agent.save(f'models/sarl/dqn_agent_firm_{agent.firm_id}_episode_{i_episode}.pth')
+            for i in agents:
+                agents[i].save(f'models/marl_{args.tot_agents_num}_{args.intelligence_agents_num}/agent_firm_{i}_episode_{i_episode}.pth')
     
     # 训练结束后保存最终模型
-    agent.save(f'models/sarl/dqn_agent_firm_{agent.firm_id}_final.pth')
+    for i in agents:
+        agents[i].save(f'models/marl_{args.tot_agents_num}_{args.intelligence_agents_num}/agent_firm_{i}_final.pth')
     
     return scores
 
-def test_agent(env, agent, num_episodes=10):
+def test_agent(env, agents, num_episodes=10):
     """
     测试训练好的DQN智能体
     
@@ -427,28 +444,30 @@ def test_agent(env, agent, num_episodes=10):
     :param num_episodes: 测试的episodes数量
     :return: 所有episode的奖励和详细信息
     """
-    scores = []
-    inventory_history = []
-    orders_history = []
-    demand_history = []
-    satisfied_demand_history = []
+    scores = {i: [] for i in agents}
+    inventory_history = {i: [] for i in agents}
+    orders_history = {i: [] for i in agents}
+    demand_history = {i: [] for i in agents}
+    satisfied_demand_history = {i: [] for i in agents}
+    demand_complete_history = {i: [] for i in agents}
     
     for i_episode in range(1, num_episodes+1):
         state = env.reset()
-        score = 0
-        episode_inventory = []
-        episode_orders = []
-        episode_demand = []
-        episode_satisfied_demand = []
+        score = {i: 0 for i in agents}
+        episode_inventory = {i: [] for i in agents}
+        episode_orders = {i: [] for i in agents}
+        episode_demand = {i: [] for i in agents}
+        episode_satisfied_demand = {i: [] for i in agents}
+        episode_demand_complete = {i: [] for i in agents}
         
         for t in range(env.max_steps):
             # 对特定企业采取动作，其他企业随机决策
             actions = np.zeros((env.num_firms, 1))
             for firm_id in range(env.num_firms):
-                if firm_id == agent.firm_id:
+                if firm_id in agents:
                     # 使用智能体策略，不使用探索
                     firm_state = state[firm_id].reshape(1, -1)
-                    action = agent.act(firm_state, epsilon=0.0)
+                    action = agents[firm_id].act(firm_state, epsilon=0.0)
                     actions[firm_id] = action
                 else:
                     # 对其他企业采取随机策略
@@ -458,14 +477,16 @@ def test_agent(env, agent, num_episodes=10):
             next_state, rewards, done = env.step(actions)
             
             # 记录关键指标
-            episode_inventory.append(env.inventory[agent.firm_id][0])
-            episode_orders.append(actions[agent.firm_id][0])
-            episode_demand.append(env.demand[agent.firm_id][0])
-            episode_satisfied_demand.append(env.satisfied_demand[agent.firm_id][0])
+            for i in agents:
+                episode_inventory[i].append(env.inventory[i][0])
+                episode_orders[i].append(actions[i][0])
+                episode_demand[i].append(env.demand[i][0])
+                episode_satisfied_demand[i].append(env.satisfied_demand[i][0])
+                episode_demand_complete[i].append(env.satisfied_demand[i][0] / env.demand[i][0])
             
-            # 该企业的奖励
-            reward = rewards[agent.firm_id][0]
-            score += reward
+                # 该企业的奖励
+                reward = rewards[i][0]
+                score[i] += reward
             
             # 更新状态
             state = next_state
@@ -474,17 +495,19 @@ def test_agent(env, agent, num_episodes=10):
                 break
         
         # 记录分数和历史数据
-        scores.append(score)
-        inventory_history.append(episode_inventory)
-        orders_history.append(episode_orders)
-        demand_history.append(episode_demand)
-        satisfied_demand_history.append(episode_satisfied_demand)
+        for i in agents:
+            scores[i].append(score[i])
+            inventory_history[i].append(episode_inventory[i])
+            orders_history[i].append(episode_orders[i])
+            demand_history[i].append(episode_demand[i])
+            satisfied_demand_history[i].append(episode_satisfied_demand[i])
+            demand_complete_history[i].append(episode_demand_complete[i])
         
-        print(f'Test Episode {i_episode}/{num_episodes} | Score: {score:.2f}')
+            print(f'Test Episode {i_episode}/{num_episodes} | Agent {i} | Score: {score[i]:.2f}')
     
-    return scores, inventory_history, orders_history, demand_history, satisfied_demand_history
+    return scores, inventory_history, orders_history, demand_history, satisfied_demand_history, demand_complete_history
 
-def plot_training_results(scores, firm_id, window_size=100):
+def plot_training_results(scores, window_size=100):
     """
     绘制训练结果
     
@@ -495,19 +518,20 @@ def plot_training_results(scores, firm_id, window_size=100):
     def moving_average(data, window_size):
         return [np.mean(data[max(0, i-window_size):i+1]) for i in range(len(data))]
     
-    avg_scores = moving_average(scores, window_size)
-    
     plt.figure(figsize=(10, 6))
-    plt.plot(np.arange(len(scores)), scores, alpha=0.3, label='Raw Reward')
-    plt.plot(np.arange(len(avg_scores)), avg_scores, label=f'{window_size}-episode Moving Average')
     plt.title('Rewards During DQN Training')
     plt.xlabel('Episode')
     plt.ylabel('Reward')
+    for i in scores:
+        avg_scores = moving_average(scores[i], window_size)
+        plt.plot(np.arange(len(scores[i])), scores[i], alpha=0.1, label=f'Raw Reward {i}')
+        plt.plot(np.arange(len(avg_scores)), avg_scores, label=f'{window_size}-episode Moving Average {i}')
+        
     plt.legend()
-    plt.savefig(f'figures/sarl/dqn_agent_firm_{firm_id}_training_rewards.png')
+    plt.savefig(f'figures/marl_{args.tot_agents_num}_{args.intelligence_agents_num}/agent_firm_training_rewards.svg')
     plt.close()
 
-def plot_test_results(scores, inventory_history, orders_history, demand_history, firm_id, satisfied_demand_history):
+def plot_test_results(scores, inventory_history, orders_history, demand_history, satisfied_demand_history, demand_complete_history):
     """
     绘制测试结果
     
@@ -517,81 +541,96 @@ def plot_test_results(scores, inventory_history, orders_history, demand_history,
     :param demand_history: 每个episode的需求历史
     :param satisfied_demand_history: 每个episode的满足需求历史
     """
-    # 计算平均值，用于绘图
-    avg_inventory = np.mean(inventory_history, axis=0)
-    avg_orders = np.mean(orders_history, axis=0)
-    avg_demand = np.mean(demand_history, axis=0)
-    avg_satisfied_demand = np.mean(satisfied_demand_history, axis=0)
-    
-    # 创建图表
-    fig, axs = plt.subplots(2, 2, figsize=(14, 10))
-    
-    # Inventory plot
-    axs[0, 0].plot(avg_inventory)
-    axs[0, 0].set_title('Average Inventory')
-    axs[0, 0].set_xlabel('Time Step')
-    axs[0, 0].set_ylabel('Inventory Level')
+    tot_results = {}
+    for i in scores:
+        fig, axs = plt.subplots(2, 2, figsize=(14, 10))
+        # 计算平均值，用于绘图
+        avg_inventory = np.mean(inventory_history[i], axis=0)
+        avg_orders = np.mean(orders_history[i], axis=0)
+        avg_demand = np.mean(demand_history[i], axis=0)
+        avg_satisfied_demand = np.mean(satisfied_demand_history[i], axis=0)
+        avg_demand_complete = np.mean(demand_complete_history[i], axis=0)
 
-    # Orders plot
-    axs[0, 1].plot(avg_orders)
-    axs[0, 1].set_title('Average Order Quantity')
-    axs[0, 1].set_xlabel('Time Step')
-    axs[0, 1].set_ylabel('Order Quantity')
+        tot_results[i] = {
+            "avg_demand_complete": np.mean(avg_demand_complete),
+            "avg_orders_fluctuation": np.mean([abs(a-b) for a, b in zip(avg_orders[1:], avg_orders[:-1])])
+        }
+        
+        # 创建图表
+        # Orders plot
+        axs[0, 0].plot(avg_orders)
+        axs[0, 0].set_title('Average Order Quantity')
+        axs[0, 0].set_xlabel('Time Step')
+        axs[0, 0].set_ylabel('Order Quantity')
 
-    # Demand vs. Satisfied Demand plot
-    axs[1, 0].plot(avg_demand, label='Demand')
-    axs[1, 0].plot(avg_satisfied_demand, label='Satisfied Demand')
-    axs[1, 0].set_title('Average Demand vs. Satisfied Demand')
-    axs[1, 0].set_xlabel('Time Step')
-    axs[1, 0].set_ylabel('Quantity')
-    axs[1, 0].legend()
+        # Demand Complete plot
+        axs[0, 1].plot(avg_demand_complete, label=f'Firm {i}')
+        axs[0, 1].set_title('Average Demand Complete Rate')
+        axs[0, 1].set_xlabel('Time Step')
+        axs[0, 1].set_ylabel('Demand Complete Rate')
 
-    # Reward bar chart
-    axs[1, 1].bar(range(len(scores)), scores)
-    axs[1, 1].set_title('Test Episode Rewards')
-    axs[1, 1].set_xlabel('Episode')
-    axs[1, 1].set_ylabel('Total Reward')
+        # Demand vs. Satisfied Demand plot
+        axs[1, 0].plot(avg_demand, label='Demand')
+        axs[1, 0].plot(avg_satisfied_demand, label='Satisfied Demand')
+        axs[1, 0].set_title('Average Demand vs. Satisfied Demand')
+        axs[1, 0].set_xlabel('Time Step')
+        axs[1, 0].set_ylabel('Quantity')
+        axs[1, 0].legend()
+
+        # Reward bar chart
+        axs[1, 1].bar(range(len(scores[i])), scores[i])
+        axs[1, 1].set_title('Test Episode Rewards')
+        axs[1, 1].set_xlabel('Episode')
+        axs[1, 1].set_ylabel('Total Reward')
     
-    plt.tight_layout()
-    plt.savefig(f'figures/sarl/dqn_agent_firm_{firm_id}_test_results.png')
-    plt.close()
+        plt.tight_layout()
+        plt.savefig(f'figures/marl_{args.tot_agents_num}_{args.intelligence_agents_num}/agent_firm_{i}_test_results.svg')
+        plt.close()
+    
+    with open(f"figures/marl_{args.tot_agents_num}_{args.intelligence_agents_num}/test_results.json", "w") as f:
+        json.dump(tot_results, f, indent=4)
+    return 
 
 if __name__ == "__main__":
     # 创建保存模型和图表的目录
-    os.makedirs('models/sarl', exist_ok=True)
-    os.makedirs('figures/sarl', exist_ok=True)
+    os.makedirs(f'models/marl_{args.tot_agents_num}_{args.intelligence_agents_num}', exist_ok=True)
+    os.makedirs(f'figures/marl_{args.tot_agents_num}_{args.intelligence_agents_num}', exist_ok=True)
     
     # 初始化环境参数
-    num_firms = 3  # 假设有3个企业
-    p = [10, 9, 8]  # 价格列表
+    num_firms = args.tot_agents_num  # 假设有3个企业
+    p = [20 - 4 * i for i in range(num_firms)]  # 价格列表
     h = 0.5  # 库存持有成本
     c = 2  # 损失销售成本
-    initial_inventory = 100  # 初始库存
+    initial_inventory = 20  # 初始库存
     poisson_lambda = 10  # 泊松分布的均值
     max_steps = 100  # 每个episode的最大步数
+    state_size = 3  # 每个企业的状态维度：订单、满足的需求和库存
+    action_size = 20  # 假设最大订单量为20
+    num_episodes = 5000
+    test_episodes = 10
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 创建仿真环境
     env = Env(num_firms, p, h, c, initial_inventory, poisson_lambda, max_steps)
+    agents = {}
     
-    # 为第二个企业创建DQN智能体
-    firm_id = 1  # 选择第二个企业进行训练
-    state_size = 3  # 每个企业的状态维度：订单、满足的需求和库存
-    action_size = 20  # 假设最大订单量为20
-    
-    agent = DQNAgent(state_size=state_size, action_size=action_size, firm_id=firm_id, max_order=action_size, device=device)
-    
-    # 训练DQN智能体
-    scores = train_dqn(env, agent, num_episodes=2000, max_t=max_steps, eps_start=1.0, eps_end=0.01, eps_decay=0.995)
-    
-    plt.rcParams['axes.unicode_minus'] = False  # 绘图显示负号
+    if args.mode == "train":
+        for firm_id in range(args.tot_agents_num-1, args.tot_agents_num-args.intelligence_agents_num-1, -1):
+            agent = DQNAgent(state_size=state_size, action_size=action_size, firm_id=firm_id, max_order=action_size, device=device)
+            agents[firm_id] = agent
+        
+        # 训练DQN智能体
+        scores = train_dqn(env, agents, num_episodes=num_episodes, max_t=max_steps, eps_start=1.0, eps_end=0.01, eps_decay=0.995)
+        plot_training_results(scores)
+    else:
+        for firm_id in range(args.tot_agents_num-1, args.tot_agents_num-args.intelligence_agents_num-1, -1):
+            agent = DQNAgent(state_size=state_size, action_size=action_size, firm_id=firm_id, max_order=action_size, device=device)
+            agent.load(f'models/marl_{args.tot_agents_num}_{args.intelligence_agents_num}/agent_firm_{firm_id}_final.pth')
+            agents[firm_id] = agent
 
-    # 绘制训练结果
-    plot_training_results(scores, firm_id)
-    
     # 测试训练好的智能体
-    test_scores, inventory_history, orders_history, demand_history, satisfied_demand_history = test_agent(env, agent, num_episodes=10)
+    test_scores, inventory_history, orders_history, demand_history, satisfied_demand_history, demand_complete_history = test_agent(env, agents, num_episodes=test_episodes)
     
     # 绘制测试结果
-    plot_test_results(test_scores, inventory_history, orders_history, demand_history, firm_id, satisfied_demand_history)
+    plot_test_results(test_scores, inventory_history, orders_history, demand_history, satisfied_demand_history, demand_complete_history)
