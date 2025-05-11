@@ -15,7 +15,7 @@ plt.rcParams['axes.unicode_minus'] = False  # 绘图显示负号
 from argparse import ArgumentParser
 
 parser = ArgumentParser()
-parser.add_argument("--mode", type=str, default="train") # [train, test]
+parser.add_argument("--mode", type=str, default="test") # [train, test]
 parser.add_argument("--tot_agents_num", type=int, default=5) # Max 5
 parser.add_argument("--intelligence_agents_num", type=int, default=1)
 args = parser.parse_args()
@@ -444,21 +444,21 @@ def test_agent(env, agents, num_episodes=10):
     :param num_episodes: 测试的episodes数量
     :return: 所有episode的奖励和详细信息
     """
-    scores = {i: [] for i in agents}
-    inventory_history = {i: [] for i in agents}
-    orders_history = {i: [] for i in agents}
-    demand_history = {i: [] for i in agents}
-    satisfied_demand_history = {i: [] for i in agents}
-    demand_complete_history = {i: [] for i in agents}
+    scores = {i: [] for i in range(env.num_firms)}
+    inventory_history = {i: [] for i in range(env.num_firms)}
+    orders_history = {i: [] for i in range(env.num_firms)}
+    demand_history = {i: [] for i in range(env.num_firms)}
+    satisfied_demand_history = {i: [] for i in range(env.num_firms)}
+    demand_complete_history = {i: [] for i in range(env.num_firms)}
     
     for i_episode in range(1, num_episodes+1):
         state = env.reset()
-        score = {i: 0 for i in agents}
-        episode_inventory = {i: [] for i in agents}
-        episode_orders = {i: [] for i in agents}
-        episode_demand = {i: [] for i in agents}
-        episode_satisfied_demand = {i: [] for i in agents}
-        episode_demand_complete = {i: [] for i in agents}
+        score = {i: 0 for i in range(env.num_firms)}
+        episode_inventory = {i: [] for i in range(env.num_firms)}
+        episode_orders = {i: [] for i in range(env.num_firms)}
+        episode_demand = {i: [] for i in range(env.num_firms)}
+        episode_satisfied_demand = {i: [] for i in range(env.num_firms)}
+        episode_demand_complete = {i: [] for i in range(env.num_firms)}
         
         for t in range(env.max_steps):
             # 对特定企业采取动作，其他企业随机决策
@@ -477,12 +477,15 @@ def test_agent(env, agents, num_episodes=10):
             next_state, rewards, done = env.step(actions)
             
             # 记录关键指标
-            for i in agents:
+            for i in range(env.num_firms):
                 episode_inventory[i].append(env.inventory[i][0])
                 episode_orders[i].append(actions[i][0])
                 episode_demand[i].append(env.demand[i][0])
                 episode_satisfied_demand[i].append(env.satisfied_demand[i][0])
-                episode_demand_complete[i].append(env.satisfied_demand[i][0] / env.demand[i][0])
+                if env.demand[i][0] > 0:
+                    episode_demand_complete[i].append(env.satisfied_demand[i][0] / env.demand[i][0])
+                else:
+                    episode_demand_complete[i].append(1)
             
                 # 该企业的奖励
                 reward = rewards[i][0]
@@ -495,7 +498,7 @@ def test_agent(env, agents, num_episodes=10):
                 break
         
         # 记录分数和历史数据
-        for i in agents:
+        for i in range(env.num_firms):
             scores[i].append(score[i])
             inventory_history[i].append(episode_inventory[i])
             orders_history[i].append(episode_orders[i])
@@ -541,8 +544,8 @@ def plot_test_results(scores, inventory_history, orders_history, demand_history,
     :param demand_history: 每个episode的需求历史
     :param satisfied_demand_history: 每个episode的满足需求历史
     """
-    tot_results = {}
-    for i in scores:
+    tot_results, tot_score, tot_demand_complete, tot_orders_fluctuation = {}, [], [], []
+    for i in range(env.num_firms):
         fig, axs = plt.subplots(2, 2, figsize=(14, 10))
         # 计算平均值，用于绘图
         avg_inventory = np.mean(inventory_history[i], axis=0)
@@ -553,8 +556,12 @@ def plot_test_results(scores, inventory_history, orders_history, demand_history,
 
         tot_results[i] = {
             "avg_demand_complete": np.mean(avg_demand_complete),
-            "avg_orders_fluctuation": np.mean([abs(a-b) for a, b in zip(avg_orders[1:], avg_orders[:-1])])
+            "avg_orders_fluctuation": np.mean([abs(a-b) for a, b in zip(avg_orders[1:], avg_orders[:-1])]),
+            "avg_scores": np.mean(scores[i])
         }
+        tot_score.append(scores[i])
+        tot_demand_complete.append(np.mean(avg_demand_complete))
+        tot_orders_fluctuation.append(np.mean([abs(a-b) for a, b in zip(avg_orders[1:], avg_orders[:-1])]))
         
         # 创建图表
         # Orders plot
@@ -587,6 +594,9 @@ def plot_test_results(scores, inventory_history, orders_history, demand_history,
         plt.savefig(f'figures/marl_{args.tot_agents_num}_{args.intelligence_agents_num}/agent_firm_{i}_test_results.svg')
         plt.close()
     
+    tot_results["avg_scores"] = np.mean(tot_score)
+    tot_results["avg_orders_fluctuation"] = np.mean(tot_orders_fluctuation)
+    tot_results["avg_demand_complete"] = np.mean(tot_demand_complete)
     with open(f"figures/marl_{args.tot_agents_num}_{args.intelligence_agents_num}/test_results.json", "w") as f:
         json.dump(tot_results, f, indent=4)
     return 
@@ -597,7 +607,7 @@ if __name__ == "__main__":
     os.makedirs(f'figures/marl_{args.tot_agents_num}_{args.intelligence_agents_num}', exist_ok=True)
     
     # 初始化环境参数
-    num_firms = args.tot_agents_num  # 假设有3个企业
+    num_firms = args.tot_agents_num  # 假设有5个企业
     p = [20 - 4 * i for i in range(num_firms)]  # 价格列表
     h = 0.5  # 库存持有成本
     c = 2  # 损失销售成本
@@ -607,7 +617,7 @@ if __name__ == "__main__":
     state_size = 3  # 每个企业的状态维度：订单、满足的需求和库存
     action_size = 20  # 假设最大订单量为20
     num_episodes = 5000
-    test_episodes = 10
+    test_episodes = 100
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
